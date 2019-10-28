@@ -1,0 +1,16 @@
+name "polyraster"
+description "A small software rasterizer for 2D vector graphics"
+homepage "https://github.com/dayllenger/polyraster"
+license "BSL-1.0"
+authors "dayllenger"
+
+targetName "polyraster"
+targetPath "bin"
+
+configuration "library" {
+    excludedSourceFiles "source/app.d"
+    targetType "staticLibrary"
+}
+configuration "demo" {
+    targetType "executable"
+}
