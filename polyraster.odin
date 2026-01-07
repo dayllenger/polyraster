@@ -24,17 +24,15 @@ FillRule :: enum {
 	Even,
 }
 
-RastParams :: struct {
+Params :: struct {
 	antialias: bool,
 	clip:      BoxI,
 	rule:      FillRule,
 }
 
 Plotter :: struct {
-	set_pixel:     proc(self: ^Plotter, x, y: int),
-	mix_pixel:     proc(self: ^Plotter, x, y: int, alpha: f32),
+	mix_pixel:     proc(self: ^Plotter, x, y: int, cov: f32),
 	set_scan_line: proc(self: ^Plotter, x1, x2, y: int),
-	mix_scan_line: proc(self: ^Plotter, x1, x2, y: int, alpha: f32),
 }
 
 @(private)
@@ -67,13 +65,7 @@ recti_intersect :: proc(a: ^RectI, b: RectI) {
 
 @(private)
 plotter_has_all_methods :: proc(plotter: ^Plotter) -> bool {
-	return(
-		plotter != nil &&
-		plotter.set_pixel != nil &&
-		plotter.mix_pixel != nil &&
-		plotter.set_scan_line != nil &&
-		plotter.mix_scan_line != nil \
-	)
+	return plotter != nil && plotter.mix_pixel != nil && plotter.set_scan_line != nil
 }
 
 @(private)
@@ -98,7 +90,7 @@ EPS :: 0.01
 
 // --- Polygon rasterizer ---
 
-rasterize_polygons :: proc(points: []Vec2, contours: []i32, params: RastParams, plotter: ^Plotter) {
+rasterize_polygons :: proc(points: []Vec2, contours: []i32, params: Params, plotter: ^Plotter) {
 	if len(points) < 3 && !is_fill_rule_inverted(params.rule) {
 		return
 	}
@@ -243,7 +235,7 @@ rasterize_polygons :: proc(points: []Vec2, contours: []i32, params: RastParams, 
 	}
 }
 
-// Perform Sutherland-Hodgman clipzping of the input 2D polygon inside a set of edges.
+// Perform Sutherland-Hodgman clipping of the input 2D polygon inside a set of edges.
 //
 // The rasterizer only clips by an axis-aligned rectangle but this algorithm
 // supports any convex clip polygon.
@@ -481,7 +473,7 @@ new_active_aa :: proc(hh: ^Hheap, e: ^Edge, start_point: f32) -> ^ActiveEdgeAA {
 
 // directly AA rasterize edges w/o supersampling
 @(private)
-rasterize_sorted_edges_aa :: proc(edges: []Edge, n: int, params: RastParams, plotter: ^Plotter) {
+rasterize_sorted_edges_aa :: proc(edges: []Edge, n: int, params: Params, plotter: ^Plotter) {
 	hh: Hheap
 	active: ^ActiveEdgeAA
 	defer hheap_cleanup(&hh)
@@ -833,7 +825,7 @@ sort_active_edges_merge :: proc(head: ^ActiveEdge) -> ^ActiveEdge {
 }
 
 @(private)
-rasterize_sorted_edges_no_aa :: proc(edges: []Edge, n: int, params: RastParams, plotter: ^Plotter) {
+rasterize_sorted_edges_no_aa :: proc(edges: []Edge, n: int, params: Params, plotter: ^Plotter) {
 	hh: Hheap
 	active: ^ActiveEdge
 	defer hheap_cleanup(&hh)
@@ -1142,7 +1134,7 @@ split_into_trapezoids :: proc(poly: []Vec2, output: ^[dynamic]HorizEdge) -> bool
 	return len(output) > prev_len
 }
 
-rasterize_trapezoid_chain :: proc(chain: []HorizEdge, params: RastParams, plotter: ^Plotter) {
+rasterize_trapezoid_chain :: proc(chain: []HorizEdge, params: Params, plotter: ^Plotter) {
 	assert(len(chain) > 1)
 	assert(params.clip.w > 0 && params.clip.h > 0)
 	assert(plotter_has_all_methods(plotter))
@@ -1563,7 +1555,8 @@ rasterize_trapezoid_i :: proc(clip: SpanI, trap: TrapezoidI, step_l, step_r: f32
 
 // --- Line rasterizer ---
 
-rasterize_line :: proc(p0, p1: Vec2, params: RastParams, plotter: ^Plotter) {
+// Integer coordinates are assumed to be at top-left pixel corner.
+rasterize_line :: proc(p0, p1: Vec2, params: Params, plotter: ^Plotter) {
 	assert(params.clip.w > 0 && params.clip.h > 0)
 	assert(plotter_has_all_methods(plotter))
 
@@ -1723,8 +1716,12 @@ rasterize_line_hori_aa :: proc(x0, y0, x1, y1: f32, aligned: bool, plotter: ^Plo
 			top := math.floor(y0)
 			topi := int(top)
 			fract := y0 - top
-			plotter->mix_scan_line(x0i + 1, x1i, topi, 1 - fract) // rfpart
-			plotter->mix_scan_line(x0i + 1, x1i, topi + 1, fract) // fpart
+			for x in x0i + 1 ..< x1i {
+				plotter->mix_pixel(x, topi, 1 - fract) // rfpart
+			}
+			for x in x0i + 1 ..< x1i {
+				plotter->mix_pixel(x, topi + 1, fract) // fpart
+			}
 		}
 	} else {
 		for x in x0i + 1 ..< x1i {
@@ -1773,7 +1770,7 @@ rasterize_line_vert_aa :: proc(x0, y0, x1, y1: f32, aligned: bool, plotter: ^Plo
 	if aligned && y0i + 1 < y1i && fequal2(x0rnd, x0) {
 		x := int(x0rnd)
 		for y in y0i + 1 ..< y1i {
-			plotter->set_pixel(x, y)
+			plotter->mix_pixel(x, y, 1.0)
 		}
 	} else {
 		for y in y0i + 1 ..< y1i {
@@ -1791,7 +1788,7 @@ rasterize_line_no_aa :: proc(x0, y0, x1, y1: int, plotter: ^Plotter) {
 	// fast path - horizontal
 	if y0 == y1 {
 		if x0 > x1 {
-			x0, x1 = x1, x0
+			x0, x1 = x1 + 1, x0 + 1
 		}
 		plotter->set_scan_line(x0, x1, y0)
 		return
@@ -1802,7 +1799,7 @@ rasterize_line_no_aa :: proc(x0, y0, x1, y1: int, plotter: ^Plotter) {
 			y0, y1 = y1, y0
 		}
 		for y in y0 ..< y1 {
-			plotter->set_pixel(x0, y)
+			plotter->mix_pixel(x0, y, 1.0)
 		}
 		return
 	}
@@ -1813,7 +1810,6 @@ rasterize_line_no_aa :: proc(x0, y0, x1, y1: int, plotter: ^Plotter) {
 	dy: int = y1 - y0
 	iy: int = int(dy > 0) - int(dy < 0)
 	dy2: int = abs(dy) * 2
-	plotter->set_pixel(x0, y0)
 
 	if dx2 >= dy2 {
 		error: int = dy2 - dx2 / 2
@@ -1823,8 +1819,8 @@ rasterize_line_no_aa :: proc(x0, y0, x1, y1: int, plotter: ^Plotter) {
 				y0 += iy
 			}
 			error += dy2
+			plotter->mix_pixel(x0, y0, 1.0)
 			x0 += ix
-			plotter->set_pixel(x0, y0)
 		}
 	} else {
 		error: int = dx2 - dy2 / 2
@@ -1834,8 +1830,8 @@ rasterize_line_no_aa :: proc(x0, y0, x1, y1: int, plotter: ^Plotter) {
 				x0 += ix
 			}
 			error += dx2
+			plotter->mix_pixel(x0, y0, 1.0)
 			y0 += iy
-			plotter->set_pixel(x0, y0)
 		}
 	}
 }
