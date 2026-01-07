@@ -107,10 +107,8 @@ rasterize_polygons :: proc(points: []Vec2, contours: []i32, params: Params, plot
 	// perform clipping first; contours may change their geometry
 
 	Contour :: struct {
-		start:   int,
-		length:  int,
-		clipped: bool,
-		bounds:  RectI,
+		points: []Vec2,
+		bounds: RectI,
 	}
 	ctrs := make([]Contour, len(contours), context.temp_allocator)
 	if ctrs == nil {return}
@@ -126,9 +124,7 @@ rasterize_polygons :: proc(points: []Vec2, contours: []i32, params: Params, plot
 	n: int
 	for length, i in contours {
 		ctr: ^Contour = &ctrs[i]
-		ctr.start = n
-		ctr.length = int(length)
-		ctr.clipped = false
+		ctr.points = points[n:][:length]
 		cb: Rect = compute_bounding_box(points[n:][:length])
 		cbi: RectI = {ifloor(cb.left), ifloor(cb.top), iceil(cb.right), iceil(cb.bottom)}
 		ctr.bounds = cbi
@@ -143,40 +139,23 @@ rasterize_polygons :: proc(points: []Vec2, contours: []i32, params: Params, plot
 	for &ctr, i in ctrs {
 		cb: RectI = ctr.bounds
 		if cb.top >= clip.bottom || cb.left > clip.right || cb.bottom <= clip.top || cb.right <= clip.left {
-			ctr.start = 0
-			ctr.length = 0
-			ctr.clipped = true
-			continue
+			ctr.points = nil
+			continue // completely outside, remove the contour
+		}
+		if cb.top >= clip.top && clip.left >= clip.left && cb.bottom <= clip.bottom && cb.right <= clip.right {
+			continue // completely inside, skip clipping
 		}
 
-		clipf := Rect{f32(clip.left), f32(clip.top), f32(clip.right), f32(clip.bottom)}
-		clip_edges: struct {
-			data:  [4][2]Vec2,
-			count: int,
+		clip_poly := [5]Vec2 {
+			{f32(clip.left), f32(clip.top)},
+			{f32(clip.right), f32(clip.top)},
+			{f32(clip.right), f32(clip.bottom)},
+			{f32(clip.left), f32(clip.bottom)},
+			{f32(clip.left), f32(clip.top)},
 		}
-		if cb.top < clip.top {
-			clip_edges.data[clip_edges.count] = {Vec2{clipf.left, clipf.top}, Vec2{clipf.right, clipf.top}}
-			clip_edges.count += 1
-		}
-		if cb.right > clip.right {
-			clip_edges.data[clip_edges.count] = {Vec2{clipf.right, clipf.top}, Vec2{clipf.right, clipf.bottom}}
-			clip_edges.count += 1
-		}
-		if cb.bottom > clip.bottom {
-			clip_edges.data[clip_edges.count] = {Vec2{clipf.right, clipf.bottom}, Vec2{clipf.left, clipf.bottom}}
-			clip_edges.count += 1
-		}
-		if cb.left < clip.left {
-			clip_edges.data[clip_edges.count] = {Vec2{clipf.left, clipf.bottom}, Vec2{clipf.left, clipf.top}}
-			clip_edges.count += 1
-		}
-		if clip_edges.count > 0 {
-			before := len(pts)
-			clip_polygon(points[ctr.start:][:ctr.length], clip_edges.data[:clip_edges.count], &pts)
-			ctr.start = before
-			ctr.length = len(pts) - before
-			ctr.clipped = true
-		}
+		before := len(pts)
+		clip_polygon(ctr.points, clip_poly[:], &pts)
+		ctr.points = pts[before:]
 	}
 	if !is_fill_rule_inverted(params.rule) {
 		recti_intersect(&bbox, clip)
@@ -186,7 +165,7 @@ rasterize_polygons :: proc(points: []Vec2, contours: []i32, params: Params, plot
 	// now we have to blow out the windings into explicit edge lists
 	n = 0
 	for ctr in ctrs {
-		n += ctr.length
+		n += len(ctr.points)
 	}
 	if n == 0 {return}
 
@@ -195,12 +174,12 @@ rasterize_polygons :: proc(points: []Vec2, contours: []i32, params: Params, plot
 	n = 0
 
 	for &ctr in ctrs {
-		if ctr.length == 0 {continue}
+		if len(ctr.points) == 0 {continue}
 
-		p: [^]Vec2 = ctr.clipped ? &pts[ctr.start] : &points[ctr.start]
-		j := ctr.length - 1
+		p: [^]Vec2 = raw_data(ctr.points)
+		j := len(ctr.points) - 1
 
-		for k := 0; k < ctr.length; k += 1 {
+		for k := 0; k < len(ctr.points); k += 1 {
 			// skip the edge if horizontal
 			if p[j].y == p[k].y {
 				j = k
@@ -235,20 +214,20 @@ rasterize_polygons :: proc(points: []Vec2, contours: []i32, params: Params, plot
 	}
 }
 
-// Perform Sutherland-Hodgman clipping of the input 2D polygon inside a set of edges.
+// Perform Sutherland-Hodgman clipping of the input 2D polygon inside another
+// convex polygon.
 //
-// The rasterizer only clips by an axis-aligned rectangle but this algorithm
-// supports any convex clip polygon.
-clip_polygon :: proc(input: []Vec2, clip_edges: [][2]Vec2, output: ^[dynamic]Vec2) {
+// Be careful with the orientation of the clip polygon: the opposite orientation
+// will invert the clipping. The clip polygon is allowed to be open on one side,
+// it is not assumed closed. To close it, append the initial point.
+clip_polygon :: proc(polygon: []Vec2, clip: []Vec2, output: ^[dynamic]Vec2) {
 	// check if a point is on right side of an edge
-	is_inside :: proc(p: Vec2, edge: [2]Vec2) -> bool {
-		a, b := edge[0], edge[1]
+	is_inside :: proc(p: Vec2, a, b: Vec2) -> bool {
 		return cross2d(b - a, p - a) > 0
 	}
 
 	// calculate intersection point
-	intersect :: proc(edge: [2]Vec2, s, e: Vec2) -> Vec2 {
-		a, b := edge[0], edge[1]
+	intersect :: proc(a, b: Vec2, s, e: Vec2) -> Vec2 {
 		es := s - e
 		ba := a - b
 		return (es * cross2d(a, b) - ba * cross2d(s, e)) * (1 / cross2d(ba, es))
@@ -260,30 +239,32 @@ clip_polygon :: proc(input: []Vec2, clip_edges: [][2]Vec2, output: ^[dynamic]Vec
 
 	// double bufferization to avoid extra copying for each clip edge
 	tmp := make([dynamic]Vec2, context.temp_allocator)
-	input := input
+	polygon := polygon
 	initial_len := len(output)
-	buf: ^[dynamic]Vec2 = (len(clip_edges) % 2 == 1) ? output : &tmp
+	buf: ^[dynamic]Vec2 = (len(clip) % 2 == 0) ? output : &tmp
 
-	for &edge in clip_edges {
+	for b, j in clip[1:] {
+		a: Vec2 = clip[j]
+
 		// iterate subject polygon edges
-		for s, i in input {
-			e: Vec2 = input[(i + 1) % len(input)]
+		for s, i in polygon {
+			e: Vec2 = polygon[(i + 1) % len(polygon)]
 
-			if is_inside(s, edge) && is_inside(e, edge) {
+			if is_inside(s, a, b) && is_inside(e, a, b) {
 				// Case 1: Both vertices are inside:
 				// Only the second vertex is added to the output list
 				append(buf, e)
-			} else if !is_inside(s, edge) && is_inside(e, edge) {
+			} else if !is_inside(s, a, b) && is_inside(e, a, b) {
 				// Case 2: First vertex is outside while second one is inside:
 				// Both the point of intersection of the edge with the clip boundary
 				// and the second vertex are added to the output list
-				append(buf, intersect(edge, s, e))
+				append(buf, intersect(a, b, s, e))
 				append(buf, e)
-			} else if is_inside(s, edge) && !is_inside(e, edge) {
+			} else if is_inside(s, a, b) && !is_inside(e, a, b) {
 				// Case 3: First vertex is inside while second one is outside:
 				// Only the point of intersection of the edge with the clip boundary
 				// is added to the output list
-				append(buf, intersect(edge, s, e))
+				append(buf, intersect(a, b, s, e))
 			} else {
 				// Case 4: Both vertices are outside
 				// No vertices are added to the output list
@@ -292,11 +273,11 @@ clip_polygon :: proc(input: []Vec2, clip_edges: [][2]Vec2, output: ^[dynamic]Vec
 
 		// swap and reset the buffers
 		if buf == output {
-			input = output[initial_len:]
+			polygon = output[initial_len:]
 			buf = &tmp
 			resize(&tmp, 0)
 		} else {
-			input = tmp[:]
+			polygon = tmp[:]
 			buf = output
 			resize(output, initial_len)
 		}
