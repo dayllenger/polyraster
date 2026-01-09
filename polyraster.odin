@@ -13,8 +13,9 @@ import "core:math"
 
 Vec2 :: [2]f32
 
-BoxI :: struct {
-	x, y, w, h: int,
+Rect :: struct {
+	left, top:     f32,
+	right, bottom: f32,
 }
 
 FillRule :: enum {
@@ -26,41 +27,13 @@ FillRule :: enum {
 
 Params :: struct {
 	antialias: bool,
-	clip:      BoxI,
+	clip:      Rect,
 	rule:      FillRule,
 }
 
 Plotter :: struct {
 	mix_pixel:     proc(self: ^Plotter, x, y: int, cov: f32),
 	set_scan_line: proc(self: ^Plotter, x1, x2, y: int),
-}
-
-@(private)
-RectI :: struct {
-	left, top, right, bottom: int,
-}
-
-@(private)
-Rect :: struct {
-	left, top, right, bottom: f32,
-}
-
-@(private)
-boxi_from_rect :: proc(r: RectI) -> BoxI {
-	return {r.left, r.top, r.right - r.left, r.bottom - r.top}
-}
-
-@(private)
-recti_from_box :: proc(b: BoxI) -> RectI {
-	return {b.x, b.y, b.x + b.w, b.y + b.h}
-}
-
-@(private)
-recti_intersect :: proc(a: ^RectI, b: RectI) {
-	if a.left < b.left {a.left = b.left}
-	if a.top < b.top {a.top = b.top}
-	if a.right > b.right {a.right = b.right}
-	if a.bottom > b.bottom {a.bottom = b.bottom}
 }
 
 @(private)
@@ -94,50 +67,35 @@ rasterize_polygons :: proc(points: []Vec2, contours: []i32, params: Params, plot
 	if len(points) < 3 && !is_fill_rule_inverted(params.rule) {
 		return
 	}
-
-	contours := contours
-	if len(contours) == 0 {
-		contours = []i32{i32(len(points))}
+	if params.clip.right <= params.clip.left || params.clip.bottom <= params.clip.top {
+		return
 	}
-
-	assert(params.clip.w > 0 && params.clip.h > 0)
 	assert(plotter_has_all_methods(plotter))
-	params := params
 
-	// perform clipping first; contours may change their geometry
+	default_contour := [1]i32{i32(len(points))}
+	contours := contours if len(contours) > 0 else default_contour[:]
+	params := params
 
 	Contour :: struct {
 		points: []Vec2,
-		bounds: RectI,
 	}
 	ctrs := make([]Contour, len(contours), context.temp_allocator)
 	if ctrs == nil {return}
 
-	// we will adjust rasterizer clipping box to the polygon bounding box,
+	// Perform clipping first. Contours may change their geometry.
+	// We will adjust rasterizer clipping box to the polygon bounding box,
 	// because clip is also the working area (on usual fill rules),
-	// and we need to minimize it
-	clip := recti_from_box(params.clip)
-	bbox := RectI{max(int), max(int), min(int), min(int)}
+	// and we need to minimize it.
 	pts := make([dynamic]Vec2, context.temp_allocator)
 
-	// initialize the array, collect contour bounding boxes into it
 	n: int
 	for length, i in contours {
 		ctr: ^Contour = &ctrs[i]
 		ctr.points = points[n:][:length]
-		cb: Rect = compute_bounding_box(points[n:][:length])
-		cbi: RectI = {ifloor(cb.left), ifloor(cb.top), iceil(cb.right), iceil(cb.bottom)}
-		ctr.bounds = cbi
-		bbox.left = min(bbox.left, cbi.left)
-		bbox.top = min(bbox.top, cbi.top)
-		bbox.right = max(bbox.right, cbi.right)
-		bbox.bottom = max(bbox.bottom, cbi.bottom)
 		n += int(length)
-	}
 
-	// clip contours
-	for &ctr, i in ctrs {
-		cb: RectI = ctr.bounds
+		clip: Rect = params.clip
+		cb: Rect = compute_bounding_box(ctr.points)
 		if cb.top >= clip.bottom || cb.left > clip.right || cb.bottom <= clip.top || cb.right <= clip.left {
 			ctr.points = nil
 			continue // completely outside, remove the contour
@@ -147,19 +105,15 @@ rasterize_polygons :: proc(points: []Vec2, contours: []i32, params: Params, plot
 		}
 
 		clip_poly := [5]Vec2 {
-			{f32(clip.left), f32(clip.top)},
-			{f32(clip.right), f32(clip.top)},
-			{f32(clip.right), f32(clip.bottom)},
-			{f32(clip.left), f32(clip.bottom)},
-			{f32(clip.left), f32(clip.top)},
+			{clip.left, clip.top},
+			{clip.right, clip.top},
+			{clip.right, clip.bottom},
+			{clip.left, clip.bottom},
+			{clip.left, clip.top},
 		}
 		before := len(pts)
 		clip_polygon(ctr.points, clip_poly[:], &pts)
 		ctr.points = pts[before:]
-	}
-	if !is_fill_rule_inverted(params.rule) {
-		recti_intersect(&bbox, clip)
-		params.clip = boxi_from_rect(bbox)
 	}
 
 	// now we have to blow out the windings into explicit edge lists
@@ -193,10 +147,10 @@ rasterize_polygons :: proc(points: []Vec2, contours: []i32, params: Params, plot
 				e.invert = true
 				a, b = j, k
 			}
-			e.x0 = p[a].x - f32(params.clip.x)
-			e.y0 = p[a].y - f32(params.clip.y)
-			e.x1 = p[b].x - f32(params.clip.x)
-			e.y1 = p[b].y - f32(params.clip.y)
+			e.x0 = p[a].x - params.clip.left
+			e.y0 = p[a].y - params.clip.top
+			e.x1 = p[b].x - params.clip.left
+			e.y1 = p[b].y - params.clip.top
 			edges[n] = e
 			n += 1
 			j = k
@@ -461,7 +415,8 @@ rasterize_sorted_edges_aa :: proc(edges: []Edge, n: int, params: Params, plotter
 
 	scanline_data: [512 + 1]f32 = ---
 	scanline, scanline2: [^]f32
-	width: int = params.clip.w
+	left, top := int(params.clip.left), int(params.clip.top)
+	width, height := int(params.clip.right) - left, int(params.clip.bottom) - top
 
 	if width > 256 {
 		scanline = raw_data(make([]f32, width * 2 + 1))
@@ -472,9 +427,9 @@ rasterize_sorted_edges_aa :: proc(edges: []Edge, n: int, params: Params, plotter
 	defer if scanline != raw_data(scanline_data[:]) {free(scanline)}
 
 	edges := edges
-	edges[n].y0 = f32(params.clip.h + 1)
+	edges[n].y0 = f32(height + 1)
 
-	for y in 0 ..< params.clip.h {
+	for y in 0 ..< height {
 		// find scanline Y bounds
 		scan_y_top := f32(y)
 		scan_y_bottom := f32(y) + 1.0
@@ -514,8 +469,8 @@ rasterize_sorted_edges_aa :: proc(edges: []Edge, n: int, params: Params, plotter
 
 			span: [2]int = fill_active_edges_aa(scanline, scanline2[1:], width, active, scan_y_top)
 
-			xx: int = params.clip.x
-			yy: int = params.clip.y + y
+			xx: int = left
+			yy: int = top + y
 			// the calls to the next function should get inlined
 			switch params.rule {
 			case .Nonzero:
@@ -533,7 +488,7 @@ rasterize_sorted_edges_aa :: proc(edges: []Edge, n: int, params: Params, plotter
 			}
 		} else if is_fill_rule_inverted(params.rule) {
 			// fill outer areas
-			plotter->set_scan_line(params.clip.x, params.clip.x + width, params.clip.y + y)
+			plotter->set_scan_line(left, left + width, top + y)
 		}
 
 		// advance all the edges
@@ -811,10 +766,13 @@ rasterize_sorted_edges_no_aa :: proc(edges: []Edge, n: int, params: Params, plot
 	active: ^ActiveEdge
 	defer hheap_cleanup(&hh)
 
-	edges := edges
-	edges[n].y0 = f32(params.clip.h + 1)
+	left, top := int(params.clip.left), int(params.clip.top)
+	width, height := int(params.clip.right) - left, int(params.clip.bottom) - top
 
-	for y in 0 ..< params.clip.h {
+	edges := edges
+	edges[n].y0 = f32(height + 1)
+
+	for y in 0 ..< height {
 		// find center of pixel for this scanline
 		scan_y := f32(y) + 0.5
 		step: ^^ActiveEdge = &active
@@ -872,23 +830,22 @@ rasterize_sorted_edges_no_aa :: proc(edges: []Edge, n: int, params: Params, plot
 
 		// now process all active edges
 		if active != nil {
-			len: int = params.clip.w
-			xx: int = params.clip.x
-			yy: int = params.clip.y + y
+			xx: int = left
+			yy: int = top + y
 			// the calls to the next function should get inlined
 			switch params.rule {
 			case .Nonzero:
-				fill_active_edges_no_aa(len, active, proc(w: int) -> bool {return w != 0}, xx, yy, plotter)
+				fill_active_edges_no_aa(width, active, proc(w: int) -> bool {return w != 0}, xx, yy, plotter)
 			case .Odd:
-				fill_active_edges_no_aa(len, active, proc(w: int) -> bool {return w % 2 != 0}, xx, yy, plotter)
+				fill_active_edges_no_aa(width, active, proc(w: int) -> bool {return w % 2 != 0}, xx, yy, plotter)
 			case .Zero:
-				fill_active_edges_no_aa(len, active, proc(w: int) -> bool {return w == 0}, xx, yy, plotter)
+				fill_active_edges_no_aa(width, active, proc(w: int) -> bool {return w == 0}, xx, yy, plotter)
 			case .Even:
-				fill_active_edges_no_aa(len, active, proc(w: int) -> bool {return w % 2 == 0}, xx, yy, plotter)
+				fill_active_edges_no_aa(width, active, proc(w: int) -> bool {return w % 2 == 0}, xx, yy, plotter)
 			}
 		} else if is_fill_rule_inverted(params.rule) {
 			// fill outer areas
-			plotter->set_scan_line(params.clip.x, params.clip.x + params.clip.w, params.clip.y + y)
+			plotter->set_scan_line(left, left + width, top + y)
 		}
 	}
 }
@@ -1116,8 +1073,12 @@ split_into_trapezoids :: proc(poly: []Vec2, output: ^[dynamic]HorizEdge) -> bool
 }
 
 rasterize_trapezoid_chain :: proc(chain: []HorizEdge, params: Params, plotter: ^Plotter) {
-	assert(len(chain) > 1)
-	assert(params.clip.w > 0 && params.clip.h > 0)
+	if len(chain) == 0 {
+		return
+	}
+	if params.clip.right <= params.clip.left || params.clip.bottom <= params.clip.top {
+		return
+	}
 	assert(plotter_has_all_methods(plotter))
 
 	xmin, xmax := max(f32), min(f32)
@@ -1126,11 +1087,11 @@ rasterize_trapezoid_chain :: proc(chain: []HorizEdge, params: Params, plotter: ^
 		xmax = max(xmax, e.r)
 	}
 
-	h_bounds := SpanI{max(params.clip.x, ifloor(xmin)), min(params.clip.x + params.clip.w, iceil(xmax))}
+	h_bounds := SpanI{ifloor(max(params.clip.left, xmin)), iceil(min(params.clip.right, xmax))}
 	if h_bounds.start >= h_bounds.end {
 		return
 	}
-	v_bounds := SpanI{params.clip.y, params.clip.y + params.clip.h}
+	v_bounds := SpanI{ifloor(params.clip.top), iceil(params.clip.bottom)}
 	accum := Accumulator {
 		frame = h_bounds,
 		width = h_bounds.end - h_bounds.start,
@@ -1538,16 +1499,18 @@ rasterize_trapezoid_i :: proc(clip: SpanI, trap: TrapezoidI, step_l, step_r: f32
 
 // Integer coordinates are assumed to be at top-left pixel corner.
 rasterize_line :: proc(p0, p1: Vec2, params: Params, plotter: ^Plotter) {
-	assert(params.clip.w > 0 && params.clip.h > 0)
+	if params.clip.right <= params.clip.left || params.clip.bottom <= params.clip.top {
+		return
+	}
 	assert(plotter_has_all_methods(plotter))
 
 	p0, p1 := p0, p1
-	b := params.clip
+	clip := params.clip
 
 	// TODO: the line must not touch the right and bottom clip borders.
 	// this is a quick fix for this issue, but not a correct one
 	margin: f32 = (params.antialias ? 1.5 : 0.5) + EPS
-	visible := clip_line(Rect{f32(b.x), f32(b.y), f32(b.x + b.w) - margin, f32(b.y + b.h) - margin}, &p0, &p1)
+	visible := clip_line(Rect{clip.left, clip.top, clip.right - margin, clip.bottom - margin}, &p0, &p1)
 	if !visible {return}
 
 	assert(p0.x >= 0 && p0.y >= 0 && p1.x >= 0 && p1.y >= 0)
