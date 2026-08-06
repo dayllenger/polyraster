@@ -175,20 +175,22 @@ rasterize_polygons :: proc(points: []Vec2, contours: []i32, params: Params, plot
 // will invert the clipping. The clip polygon is allowed to be open on one side,
 // it is not assumed closed. To close it, append the initial point.
 clip_polygon :: proc(polygon: []Vec2, clip: []Vec2, output: ^[dynamic]Vec2) {
+	if len(polygon) == 0 || len(clip) == 0 {
+		return // clip all
+	}
+
 	// check if a point is on right side of an edge
 	is_inside :: proc(p: Vec2, a, b: Vec2) -> bool {
-		return cross2d(b - a, p - a) > 0
+		ap := p - a
+		ab := b - a
+		return ab.x * ap.y - ab.y * ap.x > 0
 	}
 
 	// calculate intersection point
 	intersect :: proc(a, b: Vec2, s, e: Vec2) -> Vec2 {
 		es := s - e
 		ba := a - b
-		return (es * cross2d(a, b) - ba * cross2d(s, e)) * (1 / cross2d(ba, es))
-	}
-
-	cross2d :: proc(a, b: Vec2) -> f32 {
-		return a.x * b.y - a.y * b.x
+		return (es * (a.x * b.y - a.y * b.x) - ba * (s.x * e.y - s.y * e.x)) * (1 / (ba.x * es.y - ba.y * es.x))
 	}
 
 	// double bufferization to avoid extra copying for each clip edge
@@ -199,22 +201,24 @@ clip_polygon :: proc(polygon: []Vec2, clip: []Vec2, output: ^[dynamic]Vec2) {
 
 	for b, j in clip[1:] {
 		a: Vec2 = clip[j]
+		s: Vec2 = polygon[len(polygon) - 1]
+		s_inside := is_inside(s, a, b)
 
 		// iterate subject polygon edges
-		for s, i in polygon {
-			e: Vec2 = polygon[(i + 1) % len(polygon)]
+		for e, i in polygon {
+			e_inside := is_inside(e, a, b)
 
-			if is_inside(s, a, b) && is_inside(e, a, b) {
+			if s_inside && e_inside {
 				// Case 1: Both vertices are inside:
 				// Only the second vertex is added to the output list
 				append(buf, e)
-			} else if !is_inside(s, a, b) && is_inside(e, a, b) {
+			} else if !s_inside && e_inside {
 				// Case 2: First vertex is outside while second one is inside:
 				// Both the point of intersection of the edge with the clip boundary
 				// and the second vertex are added to the output list
 				append(buf, intersect(a, b, s, e))
 				append(buf, e)
-			} else if is_inside(s, a, b) && !is_inside(e, a, b) {
+			} else if s_inside && !e_inside {
 				// Case 3: First vertex is inside while second one is outside:
 				// Only the point of intersection of the edge with the clip boundary
 				// is added to the output list
@@ -223,6 +227,9 @@ clip_polygon :: proc(polygon: []Vec2, clip: []Vec2, output: ^[dynamic]Vec2) {
 				// Case 4: Both vertices are outside
 				// No vertices are added to the output list
 			}
+
+			s = e
+			s_inside = e_inside
 		}
 
 		// swap and reset the buffers
@@ -234,6 +241,9 @@ clip_polygon :: proc(polygon: []Vec2, clip: []Vec2, output: ^[dynamic]Vec2) {
 			polygon = tmp[:]
 			buf = output
 			resize(output, initial_len)
+		}
+		if len(polygon) == 0 {
+			return
 		}
 	}
 }
