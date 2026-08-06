@@ -940,7 +940,7 @@ is_valid_trapezoid :: proc(top, bot: HorizEdge) -> bool {
 	if top.y > bot.y {
 		return false // a trapezoid with zero height is a chain break
 	}
-	return (top.l + EPS < top.r && bot.l <= bot.r) || (bot.l + EPS < bot.r && top.l <= top.r)
+	return (top.l < top.r && bot.l <= bot.r) || (bot.l < bot.r && top.l <= top.r)
 }
 
 // Convert a simple y-monotone polygon into a chain of valid horizontal trapezoids.
@@ -1005,7 +1005,7 @@ split_into_trapezoids :: proc(poly: []Vec2, output: ^[dynamic]HorizEdge) -> bool
 	// iterate from top to bottom, construct trapezoids,
 	// abort if the polygon has self-intersections
 	prev_len := len(output)
-	bot: HorizEdge = {poly[top_index].x, poly[top_index].x, poly[top_index].y}
+	top: HorizEdge = {poly[top_index].x, poly[top_index].x, poly[top_index].y}
 	b: int = top_index // backward
 	f: int = top_index // forward
 	for _ in 0 ..< count {
@@ -1022,32 +1022,35 @@ split_into_trapezoids :: proc(poly: []Vec2, output: ^[dynamic]HorizEdge) -> bool
 
 		// skip horizontal edges
 		if bseg[0].y == bseg[1].y {
-			if bot.l == bseg[0].x {
-				bot.l = bseg[1].x
-			} else if bot.r == bseg[0].x {
-				bot.r = bseg[1].x
+			if top.l == bseg[0].x {
+				top.l = bseg[1].x
+			} else if top.r == bseg[0].x {
+				top.r = bseg[1].x
 			}
-			if bot.l > bot.r {
-				bot.l, bot.r = bot.r, bot.l
+			if top.l > top.r {
+				top.l, top.r = top.r, top.l
 			}
 			b = bnext
 			continue
 		}
 		if fseg[0].y == fseg[1].y {
-			if bot.l == fseg[0].x {
-				bot.l = fseg[1].x
-			} else if bot.r == fseg[0].x {
-				bot.r = fseg[1].x
+			if top.l == fseg[0].x {
+				top.l = fseg[1].x
+			} else if top.r == fseg[0].x {
+				top.r = fseg[1].x
 			}
-			if bot.l > bot.r {
-				bot.l, bot.r = bot.r, bot.l
+			if top.l > top.r {
+				top.l, top.r = top.r, top.l
 			}
 			f = fnext
 			continue
 		}
+		if len(output) == prev_len {
+			append(output, top)
+		}
 
 		// locate trapezoid bottom edge
-		top: HorizEdge = bot
+		bot: HorizEdge
 		if fequal2(fseg[1].y, bseg[1].y) // at the same height
 		{
 			bot.l = fseg[1].x
@@ -1073,10 +1076,8 @@ split_into_trapezoids :: proc(poly: []Vec2, output: ^[dynamic]HorizEdge) -> bool
 		}
 
 		if is_valid_trapezoid(top, bot) {
-			if len(output) == prev_len || output[len(output) - 1] != top {
-				append(output, top)
-			}
 			append(output, bot)
+			top = bot
 		}
 	}
 	return len(output) > prev_len
