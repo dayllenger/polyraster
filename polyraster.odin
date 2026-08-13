@@ -18,7 +18,7 @@ Rect :: struct {
 	right, bottom: f32,
 }
 
-FillRule :: enum {
+FillRule :: enum u8 {
 	Nonzero,
 	Odd,
 	Zero,
@@ -26,19 +26,19 @@ FillRule :: enum {
 }
 
 Params :: struct {
-	antialias: bool,
 	clip:      Rect,
 	rule:      FillRule,
+	antialias: bool,
 }
 
 Plotter :: struct {
 	mix_pixel:     proc(self: ^Plotter, x, y: int, cov: f32),
-	set_scan_line: proc(self: ^Plotter, x1, x2, y: int),
+	set_scanline: proc(self: ^Plotter, x1, x2, y: int),
 }
 
 @(private)
 plotter_has_all_methods :: proc(plotter: ^Plotter) -> bool {
-	return plotter != nil && plotter.mix_pixel != nil && plotter.set_scan_line != nil
+	return plotter != nil && plotter.mix_pixel != nil && plotter.set_scanline != nil
 }
 
 @(private)
@@ -498,7 +498,7 @@ rasterize_sorted_edges_aa :: proc(edges: []Edge, n: int, params: Params, plotter
 			}
 		} else if is_fill_rule_inverted(params.rule) {
 			// fill outer areas
-			plotter->set_scan_line(left, left + width, top + y)
+			plotter->set_scanline(left, left + width, top + y)
 		}
 
 		// advance all the edges
@@ -645,7 +645,7 @@ draw_scanline_aa :: #force_inline proc(
 		} else {
 			xx: int = x + i
 			if run {
-				plotter->set_scan_line(prev, xx, y)
+				plotter->set_scanline(prev, xx, y)
 				run = false
 			}
 			if cov > EPS {
@@ -654,7 +654,7 @@ draw_scanline_aa :: #force_inline proc(
 		}
 	}
 	if run {
-		plotter->set_scan_line(prev, x + span[1], y)
+		plotter->set_scanline(prev, x + span[1], y)
 	}
 }
 
@@ -855,7 +855,7 @@ rasterize_sorted_edges_no_aa :: proc(edges: []Edge, n: int, params: Params, plot
 			}
 		} else if is_fill_rule_inverted(params.rule) {
 			// fill outer areas
-			plotter->set_scan_line(left, left + width, top + y)
+			plotter->set_scanline(left, left + width, top + y)
 		}
 	}
 }
@@ -919,12 +919,12 @@ draw_scanline_no_aa :: proc(len: int, x0, x1, x, y: int, plotter: ^Plotter) {
 			}
 
 			// fill pixels between x0 and x1
-			plotter->set_scan_line(x + i, x + j, y)
+			plotter->set_scanline(x + i, x + j, y)
 		} else {
 			// x0,x1 are the same pixel, so compute combined coverage
 			if x1 - x0 >= FIXHALF {
 				xx := x + i
-				plotter->set_scan_line(xx, xx + 1, y)
+				plotter->set_scanline(xx, xx + 1, y)
 			}
 		}
 	}
@@ -1344,7 +1344,7 @@ accumulator_plot_aa :: proc(acc: ^Accumulator, y: int, plotter: ^Plotter) {
 			}
 		} else {
 			if run {
-				plotter->set_scan_line(prev, acc.frame.start + i, y)
+				plotter->set_scanline(prev, acc.frame.start + i, y)
 				run = false
 			}
 			if cov > EPS {
@@ -1353,7 +1353,7 @@ accumulator_plot_aa :: proc(acc: ^Accumulator, y: int, plotter: ^Plotter) {
 		}
 	}
 	if run {
-		plotter->set_scan_line(prev, acc.frame.end, y)
+		plotter->set_scanline(prev, acc.frame.end, y)
 	}
 
 	acc.ready = false
@@ -1375,13 +1375,13 @@ accumulator_plot :: proc(acc: ^Accumulator, y: int, plotter: ^Plotter) {
 				run = true
 			}
 		} else if run {
-			plotter->set_scan_line(prev, acc.frame.start + i, y)
+			plotter->set_scanline(prev, acc.frame.start + i, y)
 			run = false
 			break
 		}
 	}
 	if run {
-		plotter->set_scan_line(prev, acc.frame.end, y)
+		plotter->set_scanline(prev, acc.frame.end, y)
 	}
 
 	acc.ready = false
@@ -1449,7 +1449,7 @@ rasterize_trapezoid_i_aa :: proc(clip: SpanI, trap: TrapezoidI, step_l, step_r: 
 		}
 
 		if x_lr_ch < x_rl_ch {
-			plotter->set_scan_line(x_lr_ch, x_rl_ch, y)
+			plotter->set_scanline(x_lr_ch, x_rl_ch, y)
 		}
 
 		if x_rl_ch < x_rr_ch {
@@ -1499,7 +1499,7 @@ rasterize_trapezoid_i :: proc(clip: SpanI, trap: TrapezoidI, step_l, step_r: f32
 		x0: int = max(iround(trap.tl), clip.start)
 		x1: int = min(iround(trap.tr), clip.end)
 		if x0 < x1 {
-			plotter->set_scan_line(x0, x1, y)
+			plotter->set_scanline(x0, x1, y)
 		}
 		trap.tl += step_l
 		trap.tr += step_r
@@ -1666,7 +1666,7 @@ rasterize_line_hori_aa :: proc(x0, y0, x1, y1: f32, aligned: bool, plotter: ^Plo
 	if aligned && x0i + 1 < x1i {
 		y := math.round(y0)
 		if fequal2(y, y0) {
-			plotter->set_scan_line(x0i + 1, x1i, int(y))
+			plotter->set_scanline(x0i + 1, x1i, int(y))
 		} else {
 			top := math.floor(y0)
 			topi := int(top)
@@ -1745,7 +1745,7 @@ rasterize_line_no_aa :: proc(x0, y0, x1, y1: int, plotter: ^Plotter) {
 		if x0 > x1 {
 			x0, x1 = x1 + 1, x0 + 1
 		}
-		plotter->set_scan_line(x0, x1, y0)
+		plotter->set_scanline(x0, x1, y0)
 		return
 	}
 	// fast path - vertical
