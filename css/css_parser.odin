@@ -254,20 +254,21 @@ consume_at_rule :: proc(using p: ^Parser) -> (At_Rule, bool) {
 			open_curly := i
 			braces := 1
 			for i < len(r) && braces > 0 {
-				if r[i].kind == .Open_Curly {
+				t = r[i]
+				if t.kind == .Open_Curly {
 					braces += 1
-				} else if r[i].kind == .Close_Curly {
+				} else if t.kind == .Close_Curly {
 					braces -= 1
 				}
 				i += 1
 			}
 			if braces != 0 {
-				opt.error_handler(r[i], "unmatched braces")
+				opt.error_handler(t, "unmatched braces")
 			}
-			rule.contents = r[open_curly:i]
-			if len(rule.contents) == 0 {
+			if open_curly == i {
 				opt.error_handler(t, "empty block")
 			}
+			rule.contents = r[open_curly:i]
 			break
 		}
 		if t.kind == .Semicolon {
@@ -551,24 +552,26 @@ consume_selector_part :: proc(
 				}
 				i += 1
 				// get tokens
+				t: Token
 				start := i
 				parens := 1
 				for i < len(r) && parens > 0 {
-					if r[i].kind == .Open_Paren || r[i].kind == .Func {
+					t = r[i]
+					if t.kind == .Open_Paren || t.kind == .Func {
 						parens += 1
-					} else if r[i].kind == .Close_Paren {
+					} else if t.kind == .Close_Paren {
 						parens -= 1
 					}
 					i += 1
 				}
 				if parens != 0 {
-					opt.error_handler(r[i], "unmatched parentheses")
+					opt.error_handler(t, "unmatched parentheses")
 				}
-				inside_tokens := r[start:i - 1]
-				if len(inside_tokens) == 0 {
-					opt.error_handler(r[i], "empty pseudo-class function")
+				if start >= i - 1 {
+					opt.error_handler(t, "empty pseudo-class function")
 					continue
 				}
+				inside_tokens := r[start:i - 1]
 
 				switch func.name {
 				case "not":
@@ -986,11 +989,11 @@ consume_declaration :: proc(using p: ^Parser) -> (Property, bool) {
 		name = r[i].text,
 	}
 	i += 1
-	if i >= len(r) || r[i].kind == .Close_Curly {
-		return {}, false
-	}
 	for i < len(r) && r[i].kind == .Whitespace {
 		i += 1
+	}
+	if i >= len(r) || r[i].kind == .Close_Curly {
+		return {}, false
 	}
 
 	t := r[i]
