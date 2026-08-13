@@ -91,6 +91,7 @@ Selector_Function :: struct {
 		Nth, // :nth-*(... of <selector>)
 		Host, // :host()
 	},
+	a, b:      i16, // An+B syntax
 	selectors: []^Selector_Part,
 	name:      string,
 	args:      []Token,
@@ -545,7 +546,9 @@ consume_selector_part :: proc(
 			}
 
 			if r[i].kind == .Func {
-				func := Selector_Function{.Other, nil, r[i].text, nil}
+				func := Selector_Function {
+					name = r[i].text,
+				}
 				i += 1
 				// get tokens
 				start := i
@@ -562,6 +565,10 @@ consume_selector_part :: proc(
 					opt.error_handler(r[i], "unmatched parentheses")
 				}
 				inside_tokens := r[start:i - 1]
+				if len(inside_tokens) == 0 {
+					opt.error_handler(r[i], "empty pseudo-class function")
+					continue
+				}
 
 				switch func.name {
 				case "not":
@@ -574,9 +581,9 @@ consume_selector_part :: proc(
 					if len(func.name) > 4 && func.name[:4] == "nth-" {
 						for t, j in inside_tokens {
 							if t.kind == .Ident && t.text == "of" {
-								inside_tokens = inside_tokens[j + 1:]
-								func.args = inside_tokens[:j]
 								func.func = .Nth
+								func.a, func.b = parse_an_plus_b(inside_tokens[:j])
+								inside_tokens = inside_tokens[j + 1:]
 								break
 							}
 						}
@@ -685,6 +692,158 @@ consume_selector_part :: proc(
 	}
 
 	return part, true
+}
+
+parse_an_plus_b :: proc(tokens: []Token) -> (a, b: i16) {
+	ts := tokens
+	for len(ts) > 0 && ts[0].kind == .Whitespace {
+		ts = ts[1:]
+	}
+	for len(ts) > 0 && ts[len(ts) - 1].kind == .Whitespace {
+		ts = ts[:len(ts) - 1]
+	}
+	if len(ts) == 0 {
+		return
+	}
+
+	parse_i16 :: proc(s: string) -> (i16, bool) {
+		num: int
+		for i in 0 ..< len(s) {
+			if !is_digit(s[i]) {
+				return 0, false
+			}
+			num = num * 10 + int(s[i] - '0')
+			if num > int(max(i16)) {
+				return 0, true
+			}
+		}
+		return i16(num), true
+	}
+
+	range_check :: proc(f: f64) -> i16 {
+		return f64(-max(i16)) <= f && f <= f64(max(i16)) ? i16(f) : 0
+	}
+
+	// this stuff is a little insane because the An+B grammar was not defined
+	// in terms of tokens initially
+	t0 := ts[0]
+	if len(ts) == 1 {
+		#partial switch t0.kind {
+		case .Ident:
+			if t0.text == "odd" {
+				return 2, 1
+			}
+			if t0.text == "even" {
+				return 2, 0
+			}
+			s := t0.text
+			a = 1
+			if s[0] == '-' {
+				s = s[1:]
+				a = -1
+			}
+			if s == "n" {
+				return a, 0
+			}
+			if len(s) > 2 && s[:2] == "n-" {
+				if b, ok := parse_i16(s[2:]); ok {
+					return a, -b
+				}
+			}
+		case .Number:
+			if .Integer in t0.flags {
+				return 0, range_check(t0.number)
+			}
+		case .Dimension:
+			if .Integer in t0.flags {
+				if t0.text[t0.unit_offset:] == "n" {
+					return range_check(t0.number), 0
+				}
+			}
+		}
+		return 0, 0
+	}
+
+	if t0.kind == .Delim {
+		if t0.delim == '+' { 	// no space is allowed here
+			s := ts[1].text
+			a = 1
+			if s == "n" {
+				ts = ts[2:]
+				if len(ts) == 0 {
+					return a, 0
+				}
+			} else if len(s) > 2 && s[:2] == "n-" {
+				if b, ok := parse_i16(s[2:]); ok {
+					return a, -b
+				}
+				return 0, 0
+			} else {
+				return 0, 0
+			}
+		} else {
+			return 0, 0
+		}
+	} else if t0.kind == .Ident {
+		s := t0.text
+		a = 1
+		if s[0] == '-' {
+			s = s[1:]
+			a = -1
+		}
+		ts = ts[1:]
+		if s == "n-" {
+			for len(ts) > 0 && ts[0].kind == .Whitespace {
+				ts = ts[1:]
+			}
+			if len(ts) == 1 && ts[0].kind == .Number && .Integer in ts[0].flags {
+				if is_digit(ts[0].text[0]) {
+					return a, -range_check(ts[0].number)
+				}
+				return 0, 0
+			}
+		} else if s != "n" {
+			return 0, 0
+		}
+	} else if t0.kind == .Dimension {
+		if .Integer in t0.flags {
+			a = range_check(t0.number)
+			ts = ts[1:]
+		} else {
+			return 0, 0
+		}
+	} else {
+		return 0, 0
+	}
+
+	for len(ts) > 0 && ts[0].kind == .Whitespace {
+		ts = ts[1:]
+	}
+	if len(ts) > 0 && ts[0].kind == .Delim {
+		if ts[0].delim == '-' {
+			b = -1
+		} else if ts[0].delim == '+' {
+			b = 1
+		} else {
+			return 0, 0
+		}
+		ts = ts[1:]
+	}
+	for len(ts) > 0 && ts[0].kind == .Whitespace {
+		ts = ts[1:]
+	}
+	if len(ts) == 1 && ts[0].kind == .Number && .Integer in ts[0].flags {
+		if b != 0 {
+			if is_digit(ts[0].text[0]) {
+				return a, b * range_check(ts[0].number)
+			}
+		} else {
+			if !is_digit(ts[0].text[0]) {
+				return a, range_check(ts[0].number)
+			}
+		}
+	}
+	return 0, 0
 }
 
 @(private)

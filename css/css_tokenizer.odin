@@ -502,7 +502,13 @@ consume_numeric :: proc(using tzr: ^Tokenizer) -> Token {
 	if starts_with_ident(s[i:]) {
 		t.kind = .Dimension
 		t.unit_offset = i32(i - start)
-		curr += len(consume_name(tzr))
+		// A slight deviation from the spec: this tokenizer does not allow for anything
+		// in units other than ASCII letters. This makes it easier to parse e.g. 2n-5,
+		// and generally less confusing.
+		for is_alpha(s[i]) {
+			curr += 1
+			i += 1
+		}
 	} else if s[i] == '%' {
 		t.kind = .Percentage
 		t.unit_offset = i32(i - start)
